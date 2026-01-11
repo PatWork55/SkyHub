@@ -1,16 +1,16 @@
 """
-CONFIGURATION GLOBALE - SKYHUB PROJECT (Mode Dynamique)
-Les plages de recherche sont calculées automatiquement selon le trafic.
+CONFIGURATION GLOBALE - SKYHUB PROJECT (Mode Pendulaire)
+Profils distincts pour les arrivées (Matin) et les départs (Soir).
 """
 import math
 import statistics
 
 # --- 1. PARAMÈTRES DU DRONE (EVTOL) ---
 BATTERY_MAX = 100.0             
-BATTERY_START_MIN = 15          
-BATTERY_START_MAX = 45          
+BATTERY_START_MIN = 15     # Batterie min à l'arrivée (%)     
+BATTERY_START_MAX = 45     # Batterie max à l'arrivée (%)       
 CONSUMPTION_PER_MIN = 2.5       
-CHARGE_RATE_PER_MIN = 5.0       
+CHARGE_RATE_PER_MIN = 5.0    
 
 # --- 2. SÉCURITÉ & CONTRÔLE AÉRIEN ---
 SAFETY_BUFFER_MIN = 5.0         
@@ -28,79 +28,60 @@ COST_CRASH_PENALTY = 500000.0
 # --- 4. PARAMÈTRES DE SIMULATION ---
 SIM_DURATION_DAYS = 28          
 
-# --- 5. PROFILS DE TRAFIC ---
-PROFILE_WEEKDAY = [
-    0.05, 0.05, 0.05, 0.10, 0.20, 0.40, 
-    0.80, 0.95, 0.90, 0.70, 0.50, 0.40, 
-    0.40, 0.40, 0.45, 0.50, 0.60, 0.80, 
-    0.95, 0.90, 0.70, 0.50, 0.30, 0.10  
+# --- 5. PROFILS DE TRAFIC (ARRIVÉES vs DÉPARTS) ---
+
+# ARRIVÉES (Semaine) : Gros pic le matin (07h-09h), calme le soir
+PROFILE_ARRIVAL_WEEKDAY = [
+    0.05, 0.05, 0.05, 0.10, 0.20, 0.50,  # 00-05h
+    0.95, 0.95, 0.80, 0.60, 0.40, 0.30,  # 06-11h (RUSH MATIN)
+    0.30, 0.30, 0.30, 0.30, 0.40, 0.40,  # 12-17h
+    0.40, 0.30, 0.20, 0.10, 0.05, 0.05   # 18-23h
 ]
 
-PROFILE_WEEKEND = [
-    0.10, 0.10, 0.10, 0.05, 0.05, 0.10, 
-    0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 
-    0.70, 0.70, 0.70, 0.70, 0.70, 0.60, 
-    0.50, 0.40, 0.40, 0.30, 0.20, 0.10  
+# DÉPARTS (Semaine) : Calme le matin, Gros pic le soir (17h-19h)
+PROFILE_DEPARTURE_WEEKDAY = [
+    0.05, 0.05, 0.05, 0.05, 0.10, 0.20,  # 00-05h
+    0.30, 0.40, 0.30, 0.30, 0.30, 0.40,  # 06-11h
+    0.40, 0.50, 0.60, 0.80, 0.95, 0.95,  # 12-17h (RUSH SOIR)
+    0.90, 0.70, 0.50, 0.20, 0.10, 0.05   # 18-23h
 ]
+
+# Week-end (Plus équilibré)
+PROFILE_WEEKEND_FLAT = [0.2] * 24 
 
 # =============================================================================
-#  CALCUL AUTOMATIQUE DE L'ESPACE DE RECHERCHE (AUTO-SCALING)
+#  CALCUL AUTOMATIQUE DE L'ESPACE DE RECHERCHE
 # =============================================================================
 
 def calculate_search_space():
     """
-    Analyse les profils de trafic et déduit les bornes min/max logiques
-    pour éviter de chercher au hasard.
+    Dimensionne l'infra en se basant sur le pire cas d'ARRIVÉE (car c'est ça qui bouche les pads).
     """
-    # 1. Analyse du Trafic
-    # On prend le pire cas (Semaine) pour dimensionner
-    avg_prob = statistics.mean(PROFILE_WEEKDAY) # Moyenne (ex: 0.45)
-    max_prob = max(PROFILE_WEEKDAY)             # Pic (ex: 0.95)
+    # On dimensionne les pads sur le pic d'arrivée
+    avg_prob = statistics.mean(PROFILE_ARRIVAL_WEEKDAY)
+    max_prob = max(PROFILE_ARRIVAL_WEEKDAY)
     
-    # 2. Calcul du Flux (Drones par minute)
-    # Flux Moyen = 0.45 drone/min
-    # Flux Pic = 0.95 drone/min
-    
-    # 3. Capacité d'un seul Pad (Drones par minute)
-    # Si un cycle dure 15 min, un pad traite 1/15 = 0.066 drone/min
     pad_capacity = 1.0 / AVG_CYCLE_TIME
+    pads_for_avg = avg_prob / pad_capacity  
     
-    # 4. Estimation des Pads Nécessaires
-    # Théorie : Combien de pads pour absorber le flux MOYEN sans garage ?
-    pads_for_avg = avg_prob / pad_capacity  # ex: 0.45 / 0.066 = 6.75
+    min_pads_search = math.floor(pads_for_avg * 0.8) 
+    max_pads_search = math.ceil(pads_for_avg * 1.5) 
     
-    # Théorie : Combien de pads pour absorber le flux PIC sans garage ?
-    pads_for_peak = max_prob / pad_capacity # ex: 0.95 / 0.066 = 14.25
-    
-    # DÉCISION INTELLIGENTE :
-    # On ne construit jamais pour le Pic absolu (trop cher), on compte sur le garage.
-    # On cherche donc entre "Moyenne - un peu" et "Pic atténué".
-    
-    min_pads_search = math.floor(pads_for_avg * 0.8) # On tente d'être très agressif (sous-dimensionné)
-    max_pads_search = math.ceil(pads_for_avg * 1.5)  # On ne va pas jusqu'au pic absolu (trop cher)
-    
-    # Sécurité : Au moins 1 pad
     if min_pads_search < 1: min_pads_search = 1
     
-    # 5. Estimation du Garage Nécessaire
-    # Le garage sert de tampon. Plus le trafic est instable, plus il faut de garage.
-    # On estime large : de 2x à 10x le nombre de pads min.
-    min_garage_search = min_pads_search * 2
-    max_garage_search = min_pads_search * 12
+    # Le garage est crucial ici car on stocke les drones du matin jusqu'au soir
+    min_garage_search = min_pads_search * 3  # On augmente le ratio garage
+    max_garage_search = min_pads_search * 15
     
-    # --- GÉNÉRATION DES PLAGES ---
     pads_range = range(min_pads_search, max_pads_search + 1)
-    # Pour le garage, on fait des pas de 5 pour aller vite
     garage_range = range(min_garage_search, max_garage_search + 1, 5)
     
     return pads_range, garage_range
 
-# Exécution du calcul automatique au chargement du fichier
 SEARCH_PADS, SEARCH_GARAGE = calculate_search_space()
 
-# Optionnel : Affichage pour debug (sera visible au lancement)
-print(f"--- CONFIG AUTO-DÉTECTÉE ---")
-print(f"Flux Moyen: {statistics.mean(PROFILE_WEEKDAY):.2f}/min | Flux Pic: {max(PROFILE_WEEKDAY):.2f}/min")
-print(f"Recherche Pads:   {list(SEARCH_PADS)}")
-print(f"Recherche Garage: {list(SEARCH_GARAGE)}")
-print("-" * 30)
+if __name__ == "__main__":
+    print(f"--- CONFIG AUTO-DÉTECTÉE (ASYMÉTRIQUE) ---")
+    print(f"Pic Arrivée: {max(PROFILE_ARRIVAL_WEEKDAY):.2f} | Pic Départ: {max(PROFILE_DEPARTURE_WEEKDAY):.2f}")
+    print(f"Recherche Pads:   {list(SEARCH_PADS)}")
+    print(f"Recherche Garage: {list(SEARCH_GARAGE)}")
