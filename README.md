@@ -82,4 +82,11 @@ The project includes a **Pygame-based Control Center** to visualize the simulati
 
 ### 1. Installation
 ```bash
-pip install pygame
+pip install pygame 
+
+### 2. Run the Optimizer
+First, run the mathematical simulation to find the best configuration. This will generate a `best_params.json` file.
+```bash
+python3 optimizer.py
+
+python3 simulation.py
